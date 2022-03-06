@@ -28,6 +28,26 @@ fn main() {
                     Err(e) => Err(e.to_string())
                 }
             }))
+        .arg(Arg::new("iops-tolerance")
+            .short('t')
+            .about("Tolerance for read/write IO operations (default: 1)")
+            .long_about(
+                "Put device to sleep, even if this amount of IOPS have been read/written; \
+                Checking the power state adds one read, so using 0 would prevent sleep \
+                completely and thus is not allowed."
+            )
+            .default_value("1")
+            .validator(|val| {
+                match val.parse::<u64>() {
+                    Ok(iops_tolerance) => {
+                        if iops_tolerance < 1 {
+                            return Err(String::from("interval must be greater than 0"));
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e.to_string())
+                }
+            }))
         .arg(Arg::new("debug")
             .short('d')
             .about("Enable debug output"))
@@ -93,6 +113,7 @@ Example: sda1:3600 md127:600")
     }
 
     let check_interval: u64 = matches.value_of("check-timeout").unwrap().parse().unwrap();
+    let iops_tolerance: u64 = matches.value_of("iops-tolerance").unwrap().parse().unwrap();
     loop {
         log::debug!("sleeping for {} seconds", check_interval);
         thread::sleep(Duration::from_secs(check_interval));
@@ -104,23 +125,34 @@ Example: sda1:3600 md127:600")
                     log::debug!("fetched {:?}", dev_info);
 
                     dev.power_state = dev_info.power_state;
+                    let mut no_iops = false;
 
                     if dev.last_read_iops != dev_info.last_read_iops ||
                         dev.last_write_iops != dev_info.last_write_iops {
+
+                        if (dev.last_read_iops + iops_tolerance) >= dev_info.last_read_iops &&
+                            (dev.last_write_iops + iops_tolerance) >= dev_info.last_write_iops {
+                            no_iops = true
+                        }
+
                         dev.last_read_iops = dev_info.last_read_iops;
                         dev.last_write_iops = dev_info.last_write_iops;
-                        dev.last_update = dev_info.last_update;
-                    } else {
-                        if dev.last_update.elapsed().unwrap().as_secs() > dev.timeout &&
-                            dev.power_state != PowerState::Standby {
-                            log::debug!("issuing standby for {}", dev.name);
-                            match do_standby(&dev.name) {
-                                Ok(()) => println!("issued standby for {}", dev.name),
-                                Err(e) => println!("unable to issue standby for {}: {}",
-                                                   e.filepath, e.message)
-                            }
+
+                        if !no_iops {
                             dev.last_update = dev_info.last_update;
                         }
+                    }
+
+                    if no_iops &&
+                        dev.last_update.elapsed().unwrap().as_secs() > dev.timeout &&
+                        dev.power_state != PowerState::Standby {
+                        log::debug!("issuing standby for {}", dev.name);
+                        match do_standby(&dev.name) {
+                            Ok(()) => println!("issued standby for {}", dev.name),
+                            Err(e) => println!("unable to issue standby for {}: {}",
+                                               e.filepath, e.message)
+                        }
+                        dev.last_update = dev_info.last_update;
                     }
                     log::debug!("updated {:?}", dev);
                 }
