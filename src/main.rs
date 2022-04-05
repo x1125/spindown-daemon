@@ -114,47 +114,52 @@ Example: sda1:3600 md127:600")
 
     let check_interval: u64 = matches.value_of("check-timeout").unwrap().parse().unwrap();
     let iops_tolerance: u64 = matches.value_of("iops-tolerance").unwrap().parse().unwrap();
+    log::debug!("iops_tolerance: {:?}", iops_tolerance);
+
     loop {
         log::debug!("sleeping for {} seconds", check_interval);
         thread::sleep(Duration::from_secs(check_interval));
 
-        for dev in devices.iter_mut() {
-            match get_device_info(&dev.name) {
-                Ok(dev_info) => {
-                    log::debug!("current {:?}", dev);
-                    log::debug!("fetched {:?}", dev_info);
+        for cache in devices.iter_mut() {
+            match get_device_info(&cache.name) {
+                Ok(current) => {
+                    log::debug!("cache {:?}", cache);
+                    log::debug!("current {:?}", current);
 
-                    dev.power_state = dev_info.power_state;
+                    cache.power_state = current.power_state;
                     let mut no_iops = false;
 
-                    if dev.last_read_iops != dev_info.last_read_iops ||
-                        dev.last_write_iops != dev_info.last_write_iops {
-
-                        if (dev.last_read_iops + iops_tolerance) >= dev_info.last_read_iops &&
-                            (dev.last_write_iops + iops_tolerance) >= dev_info.last_write_iops {
-                            no_iops = true
+                    if cache.last_read_iops == current.last_read_iops &&
+                        cache.last_write_iops == current.last_write_iops {
+                        no_iops = true;
+                        log::debug!("device {:?} did not change", current.name)
+                    } else {
+                        if (cache.last_read_iops + iops_tolerance) >= current.last_read_iops &&
+                            (cache.last_write_iops + iops_tolerance) >= current.last_write_iops {
+                            no_iops = true;
+                            log::debug!("device {:?} is within tolerance", current.name)
                         }
 
-                        dev.last_read_iops = dev_info.last_read_iops;
-                        dev.last_write_iops = dev_info.last_write_iops;
+                        cache.last_read_iops = current.last_read_iops;
+                        cache.last_write_iops = current.last_write_iops;
 
                         if !no_iops {
-                            dev.last_update = dev_info.last_update;
+                            cache.last_update = current.last_update;
                         }
                     }
 
                     if no_iops &&
-                        dev.last_update.elapsed().unwrap().as_secs() > dev.timeout &&
-                        dev.power_state != PowerState::Standby {
-                        log::debug!("issuing standby for {}", dev.name);
-                        match do_standby(&dev.name) {
-                            Ok(()) => println!("issued standby for {}", dev.name),
+                        cache.last_update.elapsed().unwrap().as_secs() > cache.timeout &&
+                        cache.power_state != PowerState::Standby {
+                        log::debug!("issuing standby for {}", cache.name);
+                        match do_standby(&cache.name) {
+                            Ok(()) => println!("issued standby for {}", cache.name),
                             Err(e) => println!("unable to issue standby for {}: {}",
                                                e.filepath, e.message)
                         }
-                        dev.last_update = dev_info.last_update;
+                        cache.last_update = current.last_update;
                     }
-                    log::debug!("updated {:?}", dev);
+                    log::debug!("updated cache {:?}", cache);
                 }
                 Err(e) => println!("unable to get device information for {}: {}", e.filepath, e.message)
             }
