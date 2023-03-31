@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use clap::{App, Arg};
+use clap::{Command, Arg, ArgAction};
 
 use crate::spindown_daemon::{DeviceInfo, get_device_info};
 use crate::spindown_daemon::ata::{do_standby, PowerState};
@@ -9,55 +9,56 @@ use crate::spindown_daemon::ata::{do_standby, PowerState};
 mod spindown_daemon;
 
 fn main() {
-    let matches = App::new("spindown-daemon")
+    let matches = Command::new("spindown-daemon")
         .version("1.0")
         .author("x1125 <git@1125.io>")
         .about("Spin-down hard disks without relying on the firmware")
         .arg(Arg::new("check-timeout")
             .short('i')
-            .about("Check interval in seconds (default: 60)")
+            .help("Check interval in seconds (default: 60)")
             .default_value("60")
-            .validator(|val| {
+            .value_parser(|val: &str| {
                 match val.parse::<u64>() {
                     Ok(check_timeout) => {
                         if check_timeout < 1 {
                             return Err(String::from("interval must be greater than 0"));
                         }
-                        Ok(())
+                        Ok(check_timeout)
                     }
                     Err(e) => Err(e.to_string())
                 }
             }))
         .arg(Arg::new("iops-tolerance")
             .short('t')
-            .about("Tolerance for read/write IO operations (default: 1)")
-            .long_about(
+            .help("Tolerance for read/write IO operations (default: 1)")
+            .long_help(
                 "Put device to sleep, even if this amount of IOPS have been read/written; \
                 Checking the power state adds one read, so using 0 would prevent sleep \
                 completely and thus is not allowed."
             )
             .default_value("1")
-            .validator(|val| {
+            .value_parser(|val: &str| {
                 match val.parse::<u64>() {
                     Ok(iops_tolerance) => {
                         if iops_tolerance < 1 {
                             return Err(String::from("interval must be greater than 0"));
                         }
-                        Ok(())
+                        Ok(iops_tolerance)
                     }
                     Err(e) => Err(e.to_string())
                 }
             }))
         .arg(Arg::new("debug")
             .short('d')
-            .about("Enable debug output"))
+            .help("Enable debug output")
+            .action(ArgAction::SetTrue))
         .arg(Arg::new("DEVICE:TIMEOUT")
-            .long_about(
+            .long_help(
                 "Device-names and timeout in seconds
 Example: sda1:3600 md127:600")
             .required(true)
-            .multiple(true)
-            .validator(|val| {
+            .num_args(1..)
+            .value_parser(|val: &str| -> Result<String, &str> {
                 let (device_name_str, device_timeout_str) = if let Some((a, b)) = val.split_once(':') {
                     (a, b)
                 } else {
@@ -80,12 +81,12 @@ Example: sda1:3600 md127:600")
                     }
                     Err(_) => return Err("device timeout must be a number")
                 }
-                Ok(())
+                Ok(String::from(val))
             })
         )
         .get_matches();
 
-    if matches.is_present("debug") {
+    if matches.get_flag("debug") {
         stderrlog::new().
             verbosity(log::LevelFilter::Debug as usize).
             module(module_path!()).
@@ -93,8 +94,8 @@ Example: sda1:3600 md127:600")
     }
 
     let mut devices: Vec<Box<DeviceInfo>> = vec![];
-    for item in matches.values_of("DEVICE:TIMEOUT").unwrap() {
-        let (device_name, device_timeout_str) = item.split_once(':').expect("asd");
+    for item in matches.get_many::<String>("DEVICE:TIMEOUT").unwrap() {
+        let (device_name, device_timeout_str) = item.split_once(':').unwrap();
         let device_timeout: u64 = device_timeout_str.parse().unwrap();
 
         match get_device_info(&device_name.to_owned().to_string()) {
@@ -112,8 +113,8 @@ Example: sda1:3600 md127:600")
         return;
     }
 
-    let check_interval: u64 = matches.value_of("check-timeout").unwrap().parse().unwrap();
-    let iops_tolerance: u64 = matches.value_of("iops-tolerance").unwrap().parse().unwrap();
+    let check_interval: u64 = *matches.get_one("check-timeout").unwrap();
+    let iops_tolerance: u64 = *matches.get_one("iops-tolerance").unwrap();
     log::debug!("iops_tolerance: {:?}", iops_tolerance);
 
     loop {
