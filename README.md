@@ -18,6 +18,12 @@ every 60 seconds and trigger a spin-down if there's no usage for 300 seconds.
 
 Use `-d` to get debug information.
 
+### Suspend system
+
+Use `--suspend` to suspend the whole system after all disks are asleep.
+Use `--suspend-timeout` to wait for n seconds between last sleeping disk and system suspend.
+Use `--suspend-check-script` to run a shell script and block system suspend on non-zero exit code.
+
 ## Technical details
 
 The checks will use sysfs (`/sys/block/$DEVICE/stat`) to get read and write I/Os to determine device access

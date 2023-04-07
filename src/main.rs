@@ -1,7 +1,9 @@
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use clap::{Command, Arg, ArgAction};
+
+use std::process::Command as ProcessCommand;
 
 use crate::spindown_daemon::{DeviceInfo, get_device_info};
 use crate::spindown_daemon::ata::{do_standby, PowerState};
@@ -9,6 +11,18 @@ use crate::spindown_daemon::ata::{do_standby, PowerState};
 mod spindown_daemon;
 
 fn main() {
+    let greater_than_zero_value_parser = |val: &str| {
+        match val.parse::<u64>() {
+            Ok(num) => {
+                if num < 1 {
+                    return Err(String::from("value must be greater than 0"));
+                }
+                Ok(num)
+            }
+            Err(e) => Err(e.to_string())
+        }
+    };
+
     let matches = Command::new("spindown-daemon")
         .version("1.0")
         .author("x1125 <git@1125.io>")
@@ -17,17 +31,7 @@ fn main() {
             .short('i')
             .help("Check interval in seconds (default: 60)")
             .default_value("60")
-            .value_parser(|val: &str| {
-                match val.parse::<u64>() {
-                    Ok(check_timeout) => {
-                        if check_timeout < 1 {
-                            return Err(String::from("interval must be greater than 0"));
-                        }
-                        Ok(check_timeout)
-                    }
-                    Err(e) => Err(e.to_string())
-                }
-            }))
+            .value_parser(greater_than_zero_value_parser))
         .arg(Arg::new("iops-tolerance")
             .short('t')
             .help("Tolerance for read/write IO operations (default: 1)")
@@ -37,17 +41,20 @@ fn main() {
                 completely and thus is not allowed."
             )
             .default_value("1")
-            .value_parser(|val: &str| {
-                match val.parse::<u64>() {
-                    Ok(iops_tolerance) => {
-                        if iops_tolerance < 1 {
-                            return Err(String::from("interval must be greater than 0"));
-                        }
-                        Ok(iops_tolerance)
-                    }
-                    Err(e) => Err(e.to_string())
-                }
-            }))
+            .value_parser(greater_than_zero_value_parser))
+        .arg(Arg::new("suspend")
+            .long("suspend")
+            .help("Suspend system after all drives are sleeping")
+            .action(ArgAction::SetTrue))
+        .arg(Arg::new("suspend-timeout")
+            .long("suspend-timeout")
+            .help("Wait n-seconds before system suspend after all drives are sleeping")
+            .default_value("60")
+            .value_parser(greater_than_zero_value_parser))
+        .arg(Arg::new("suspend-check-script")
+            .long("suspend-check-script")
+            .help("Path of external script to block the system suspension")
+            .long_help("Exit code 0 allows suspend; every other code will block it"))
         .arg(Arg::new("debug")
             .short('d')
             .help("Enable debug output")
@@ -117,9 +124,16 @@ Example: sda1:3600 md127:600")
     let iops_tolerance: u64 = *matches.get_one("iops-tolerance").unwrap();
     log::debug!("iops_tolerance: {:?}", iops_tolerance);
 
+    let suspend: bool = matches.get_flag("suspend");
+    let suspend_timeout: u64 = *matches.get_one("suspend-timeout").unwrap();
+    let suspend_check_script: Option<&String> = matches.get_one::<String>("suspend-check-script");
+
     loop {
         log::debug!("sleeping for {} seconds", check_interval);
         thread::sleep(Duration::from_secs(check_interval));
+
+        let mut disks_running: bool = false;
+        let mut latest_update: SystemTime = SystemTime::UNIX_EPOCH;
 
         for cache in devices.iter_mut() {
             match get_device_info(&cache.name) {
@@ -160,10 +174,52 @@ Example: sda1:3600 md127:600")
                         }
                         cache.last_update = current.last_update;
                     }
+
+                    if cache.power_state != PowerState::Standby {
+                        disks_running = true;
+                    }
+                    if cache.last_update > latest_update {
+                        latest_update = cache.last_update;
+                    }
+
                     log::debug!("updated cache {:?}", cache);
                 }
                 Err(e) => println!("unable to get device information for {}: {}", e.filepath, e.message)
             }
+        }
+
+        if suspend {
+            log::debug!("checking system suspend");
+            if disks_running {
+                log::debug!("disk(s) still running");
+                continue;
+            }
+
+            if latest_update.elapsed().unwrap().as_secs() < suspend_timeout {
+                log::debug!("suspend timeout not met");
+                continue;
+            }
+
+            match suspend_check_script {
+                Some(script) => {
+                    log::debug!("executing check script");
+                    let cmd = ProcessCommand::new("bash")
+                        .arg(script)
+                        .output()
+                        .expect("failed to execute process");
+                    if cmd.status.code().unwrap() != 0 {
+                        log::debug!("script exited with non zero code ({})", cmd.status.code().unwrap());
+                        continue;
+                    }
+                }
+                None => {}
+            }
+
+            log::debug!("suspending system...");
+            ProcessCommand::new("/usr/bin/systemctl")
+                .arg("suspend")
+                .output()
+                .expect("failed to execute process");
         }
     }
 }
